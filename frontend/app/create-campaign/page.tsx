@@ -1,540 +1,192 @@
+// create campaign page
 "use client";
 
 import { useState, useEffect } from "react";
+import { ethers } from "ethers";
+import donationTokenJson from "@/lib/abi/DonationToken.json";
+import Image from "next/image";
+
+const CONTRACT_ADDRESS = "0xc8d97C1A068C7f1900adeD0bC32240eefa0Fd3E0";
 
 interface CampaignFormData {
   title: string;
   description: string;
   email: string;
   goalAmount: string;
+  imageUrl: string;
   startDate: string;
   endDate: string;
 }
 
-interface ApiResponse {
-  success: boolean;
-  message: string;
-  campaignId?: string;
-}
-
-// Dummy API function
-async function createCampaignAPI(
-  data: CampaignFormData & { beneficiaryAddress: string }
-): Promise<ApiResponse> {
-  // Simulate API delay
-  await new Promise((resolve) => setTimeout(resolve, 1500));
-
-  // Simulate API response
-  const mockCampaignId = `campaign_${Date.now()}`;
-
-  // Simulate random success/failure for demo purposes
-  const success = Math.random() > 0.1; // 90% success rate
-
-  if (success) {
-    return {
-      success: true,
-      message: "Campaign created successfully!",
-      campaignId: mockCampaignId,
-    };
-  } else {
-    return {
-      success: false,
-      message: "Failed to create campaign. Please try again.",
-    };
-  }
-}
-
 export default function CreateCampaignPage() {
   const [connectedAddress, setConnectedAddress] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [txHash, setTxHash] = useState<string | null>(null);
+  const [submitStatus, setSubmitStatus] = useState<{ type: "success" | "error" | null; message: string }>({ type: null, message: "" });
+
   const [formData, setFormData] = useState<CampaignFormData>({
     title: "",
     description: "",
     email: "",
     goalAmount: "",
+    imageUrl: "",
     startDate: "",
     endDate: "",
   });
 
-  const [image, setImage] = useState<File | null>(null);
-  const [imageError, setImageError] = useState<string>("");
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [submitStatus, setSubmitStatus] = useState<{
-    type: "success" | "error" | null;
-    message: string;
-  }>({ type: null, message: "" });
-
-  // Check wallet connection
+  // Detect Wallet
   useEffect(() => {
-    const checkWalletConnection = async () => {
-      const ethereum = (window as any)?.ethereum;
-      if (!ethereum) {
-        setConnectedAddress(null);
-        return;
-      }
-
-      try {
-        const accounts = await ethereum.request({ method: "eth_accounts" });
-        if (accounts?.length) {
-          setConnectedAddress(accounts[0]);
-        } else {
-          setConnectedAddress(null);
-        }
-      } catch (e) {
-        setConnectedAddress(null);
-      }
-    };
-
-    checkWalletConnection();
-
-    // Listen for account changes
     const ethereum = (window as any)?.ethereum;
-    if (ethereum) {
-      const handleAccountsChanged = (accounts: string[]) => {
-        if (accounts?.length) {
-          setConnectedAddress(accounts[0]);
-        } else {
-          setConnectedAddress(null);
-        }
-      };
+    if (!ethereum) return;
 
-      ethereum.on?.("accountsChanged", handleAccountsChanged);
+    ethereum.request({ method: "eth_accounts" }).then((accounts: string[]) => {
+      if (accounts?.length) setConnectedAddress(accounts[0]);
+    });
 
-      return () => {
-        ethereum.removeListener?.("accountsChanged", handleAccountsChanged);
-      };
-    }
+    ethereum.on?.("accountsChanged", (accounts: string[]) => {
+      setConnectedAddress(accounts?.[0] || null);
+    });
   }, []);
 
-  const handleChange = (
-    e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>
-  ) => {
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
-    // For goalAmount, only allow whole numbers (no decimals)
+
     if (name === "goalAmount") {
-      const intValue = value.replace(/[^0-9]/g, "");
-      setFormData((prev) => ({ ...prev, [name]: intValue }));
-    } else {
-      setFormData((prev) => ({ ...prev, [name]: value }));
-    }
-  };
-
-  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    setImageError("");
-
-    if (!file) {
-      setImage(null);
+      const onlyNumbers = value.replace(/[^0-9]/g, "");
+      setFormData((p) => ({ ...p, [name]: onlyNumbers }));
       return;
     }
 
-    // Check file type
-    if (!file.type.startsWith("image/")) {
-      setImageError("Please select a valid image file");
-      setImage(null);
-      return;
-    }
-
-    // Check file size (4MB = 4 * 1024 * 1024 bytes)
-    const maxSize = 4 * 1024 * 1024; // 4MB
-    if (file.size > maxSize) {
-      setImageError("Image size must be less than 4MB");
-      setImage(null);
-      return;
-    }
-
-    setImage(file);
+    setFormData((p) => ({ ...p, [name]: value }));
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (!connectedAddress) {
-      setSubmitStatus({
-        type: "error",
-        message: "Please connect your wallet first",
-      });
+      setSubmitStatus({ type: "error", message: "Please connect your wallet first." });
       return;
     }
 
-    // Validate that end date is after start date
-    if (formData.startDate && formData.endDate) {
-      if (new Date(formData.endDate) <= new Date(formData.startDate)) {
-        setSubmitStatus({
-          type: "error",
-          message: "End date must be after start date",
-        });
-        return;
-      }
+    if (new Date(formData.endDate) <= new Date(formData.startDate)) {
+      setSubmitStatus({ type: "error", message: "End date must be after start date." });
+      return;
     }
-
-    setIsSubmitting(true);
-    setSubmitStatus({ type: null, message: "" });
 
     try {
-      // Use connected address as beneficiary
-      const dataWithBeneficiary = {
-        ...formData,
-        beneficiaryAddress: connectedAddress,
-      };
-      const response = await createCampaignAPI(dataWithBeneficiary);
+      setIsSubmitting(true);
+      setSubmitStatus({ type: null, message: "" });
+      setTxHash(null);
 
-      if (response.success) {
-        setSubmitStatus({
-          type: "success",
-          message: `${response.message} Campaign ID: ${response.campaignId}`,
-        });
-        // Reset form on success
-        setFormData({
-          title: "",
-          description: "",
-          email: "",
-          goalAmount: "",
-          startDate: "",
-          endDate: "",
-        });
-        setImage(null);
-        setImageError("");
-      } else {
-        setSubmitStatus({
-          type: "error",
-          message: response.message,
-        });
-      }
-    } catch (error) {
-      setSubmitStatus({
-        type: "error",
-        message: "An unexpected error occurred. Please try again.",
-      });
-    } finally {
-      setIsSubmitting(false);
+      const ethereum = (window as any).ethereum;
+      const provider = new ethers.BrowserProvider(ethereum);
+      const signer = await provider.getSigner();
+      const contract = new ethers.Contract(CONTRACT_ADDRESS, donationTokenJson.abi, signer);
+
+      const goalInUSDC = Number(formData.goalAmount) * 1_000_000;
+      const startTimestamp = Math.floor(new Date(formData.startDate).getTime() / 1000);
+      const endTimestamp = Math.floor(new Date(formData.endDate).getTime() / 1000);
+
+      const tx = await contract.createCampaign(
+        formData.title,
+        formData.description,
+        formData.email,
+        goalInUSDC,
+        formData.imageUrl,
+        startTimestamp,
+        endTimestamp
+      );
+
+      setSubmitStatus({ type: null, message: "Waiting for transaction confirmation..." });
+      const receipt = await tx.wait();
+
+      setSubmitStatus({ type: "success", message: "Campaign created successfully!" });
+      setTxHash(receipt.hash);
+
+      setFormData({ title: "", description: "", email: "", goalAmount: "", imageUrl: "", startDate: "", endDate: "" });
+    } catch (err: any) {
+      setSubmitStatus({ type: "error", message: err?.reason || err?.message || "Transaction failed" });
     }
+
+    setIsSubmitting(false);
   };
 
+  const inputClass =
+    "w-full p-3 rounded-xl bg-white border border-gray-200 shadow-sm focus:outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-200";
+
   return (
-    <main style={{ padding: 40, maxWidth: 800, margin: "0 auto" }}>
-      {/* PAGE CONTENT */}
-      <div style={{ marginBottom: 40 }}>
-        <h1 style={{ fontSize: 32, fontWeight: 700, marginBottom: 8 }}>
-          Create Campaign
-        </h1>
-        <p style={{ color: "#64748b", fontSize: 16 }}>
-          Launch your fundraising campaign on the blockchain
-        </p>
+    <section className="py-20">
+      <div className="max-w-3xl mx-auto">
+        <div className="bg-white/70 backdrop-blur-md px-10 pb-10 pt-6 rounded-3xl shadow-lg border border-white/40">
+
+          {/* HEADER */}
+          <div className="mb-8 text-center">
+            <h1 className="text-3xl md:text-4xl font-bold text-gray-800 mb-2">Create Campaign</h1>
+            <p className="text-gray-600">Launch your fundraising campaign on the blockchain</p>
+          </div>
+
+          {/* FORM */}
+          <form onSubmit={handleSubmit} className="space-y-6">
+            <div>
+              <label className="font-semibold text-sm mb-1 block">Campaign Title *</label>
+              <input type="text" name="title" required value={formData.title} onChange={handleChange} className={inputClass} />
+            </div>
+
+            <div>
+              <label className="font-semibold text-sm mb-1 block">Description *</label>
+              <textarea name="description" required rows={5} value={formData.description} onChange={handleChange} className={inputClass} />
+            </div>
+
+            <div>
+              <label className="font-semibold text-sm mb-1 block">Email *</label>
+              <input type="email" name="email" required value={formData.email} onChange={handleChange} className={inputClass} />
+            </div>
+
+            <div>
+              <label className="font-semibold text-sm mb-1 block">Goal Amount (USDC) *</label>
+              <input type="number" name="goalAmount" required value={formData.goalAmount} onChange={handleChange} className={inputClass} />
+            </div>
+
+            <div>
+              <label className="font-semibold text-sm mb-1 block">Campaign Image URL</label>
+              <input type="text" name="imageUrl" value={formData.imageUrl} onChange={handleChange} className={inputClass} />
+
+              {formData.imageUrl && (
+                <div className="relative w-48 h-32 mt-3 rounded-xl border border-gray-200 overflow-hidden">
+                  <Image src={formData.imageUrl} alt="Preview" fill sizes="192px" className="object-cover" />
+                </div>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="font-semibold text-sm mb-1 block">Start Date & Time *</label>
+                <input type="datetime-local" name="startDate" required value={formData.startDate} onChange={handleChange} className={inputClass} />
+              </div>
+              <div>
+                <label className="font-semibold text-sm mb-1 block">End Date & Time *</label>
+                <input type="datetime-local" name="endDate" required value={formData.endDate} onChange={handleChange} className={inputClass} />
+              </div>
+            </div>
+
+            {submitStatus.type && (
+              <div className={`p-4 rounded-xl border text-sm ${submitStatus.type === "success" ? "bg-green-100 border-green-300 text-green-700" : "bg-red-100 border-red-300 text-red-700"}`}>
+                {submitStatus.message}
+              </div>
+            )}
+
+            {txHash && (
+              <a href={`https://sepolia.etherscan.io/tx/${txHash}`} target="_blank" className="block text-orange-600 underline text-sm">
+                View Transaction on Etherscan
+              </a>
+            )}
+
+            <button type="submit" disabled={isSubmitting || !connectedAddress} className={`w-full py-3 rounded-xl font-semibold transition ${!connectedAddress ? "bg-gray-400 cursor-not-allowed text-white" : "bg-orange-500 hover:bg-orange-600 text-white"}`}>
+              {!connectedAddress ? "Please Connect Wallet" : isSubmitting ? "Creating..." : "Create Campaign"}
+            </button>
+          </form>
+        </div>
       </div>
-
-      {/* FORM */}
-      <form
-        onSubmit={handleSubmit}
-        style={{ display: "flex", flexDirection: "column", gap: 24 }}
-      >
-        {/* Title */}
-        <div>
-          <label
-            htmlFor="title"
-            style={{
-              display: "block",
-              marginBottom: 8,
-              fontWeight: 600,
-              fontSize: 14,
-            }}
-          >
-            Campaign Title *
-          </label>
-          <input
-            type="text"
-            id="title"
-            name="title"
-            value={formData.title}
-            onChange={handleChange}
-            required
-            placeholder="e.g., Help Build a School"
-            style={{
-              width: "100%",
-              padding: "12px 16px",
-              borderRadius: 8,
-              border: "1px solid #e2e8f0",
-              fontSize: 16,
-              backgroundColor: "#ffffff",
-              color: "#0f172a",
-            }}
-          />
-        </div>
-
-        {/* Description */}
-        <div>
-          <label
-            htmlFor="description"
-            style={{
-              display: "block",
-              marginBottom: 8,
-              fontWeight: 600,
-              fontSize: 14,
-            }}
-          >
-            Description *
-          </label>
-          <textarea
-            id="description"
-            name="description"
-            value={formData.description}
-            onChange={handleChange}
-            required
-            placeholder="Tell people about your campaign...."
-            rows={6}
-            style={{
-              width: "100%",
-              padding: "12px 16px",
-              borderRadius: 8,
-              border: "1px solid #e2e8f0",
-              fontSize: 16,
-              fontFamily: "inherit",
-              resize: "vertical",
-              backgroundColor: "#ffffff",
-              color: "#0f172a",
-            }}
-          />
-        </div>
-
-        {/* Email */}
-        <div>
-          <label
-            htmlFor="email"
-            style={{
-              display: "block",
-              marginBottom: 8,
-              fontWeight: 600,
-              fontSize: 14,
-            }}
-          >
-            Email *
-          </label>
-          <input
-            type="email"
-            id="email"
-            name="email"
-            value={formData.email}
-            onChange={handleChange}
-            required
-            placeholder="e.g., email@email.com"
-            style={{
-              width: "100%",
-              padding: "12px 16px",
-              borderRadius: 8,
-              border: "1px solid #e2e8f0",
-              fontSize: 16,
-              backgroundColor: "#ffffff",
-              color: "#0f172a",
-            }}
-          />
-        </div>
-
-        {/* Goal Amount */}
-        <div>
-          <label
-            htmlFor="goalAmount"
-            style={{
-              display: "block",
-              marginBottom: 8,
-              fontWeight: 600,
-              fontSize: 14,
-            }}
-          >
-            Goal Amount (USDC) *
-          </label>
-          <input
-            type="number"
-            id="goalAmount"
-            name="goalAmount"
-            value={formData.goalAmount}
-            onChange={handleChange}
-            required
-            min="0"
-            step="1"
-            placeholder="0"
-            style={{
-              width: "100%",
-              padding: "12px 16px",
-              borderRadius: 8,
-              border: "1px solid #e2e8f0",
-              fontSize: 16,
-              backgroundColor: "#ffffff",
-              color: "#0f172a",
-            }}
-          />
-        </div>
-
-        {/* Image */}
-        <div>
-          <label
-            htmlFor="image"
-            style={{
-              display: "block",
-              marginBottom: 8,
-              fontWeight: 600,
-              fontSize: 14,
-            }}
-          >
-            Campaign Image
-          </label>
-          <input
-            type="file"
-            id="image"
-            name="image"
-            accept="image/*"
-            onChange={handleImageChange}
-            style={{
-              width: "100%",
-              padding: "12px 16px",
-              borderRadius: 8,
-              border: "1px solid #e2e8f0",
-              fontSize: 16,
-              backgroundColor: "#ffffff",
-              color: "#0f172a",
-            }}
-          />
-          {imageError && (
-            <p style={{ marginTop: 4, fontSize: 12, color: "#dc2626" }}>
-              {imageError}
-            </p>
-          )}
-          {image && !imageError && (
-            <p style={{ marginTop: 4, fontSize: 12, color: "#16a34a" }}>
-              Image selected: {image.name} (
-              {(image.size / 1024 / 1024).toFixed(2)} MB)
-            </p>
-          )}
-          <p style={{ marginTop: 4, fontSize: 12, color: "#64748b" }}>
-            Maximum file size: 4MB
-          </p>
-        </div>
-
-        {/* Start Date & End Date */}
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "1fr 1fr",
-            gap: 16,
-          }}
-        >
-          <div>
-            <label
-              htmlFor="startDate"
-              style={{
-                display: "block",
-                marginBottom: 8,
-                fontWeight: 600,
-                fontSize: 14,
-              }}
-            >
-              Start Date *
-            </label>
-            <input
-              type="date"
-              id="startDate"
-              name="startDate"
-              value={formData.startDate}
-              onChange={handleChange}
-              required
-              min={new Date().toISOString().split("T")[0]}
-              style={{
-                width: "100%",
-                padding: "12px 16px",
-                borderRadius: 8,
-                border: "1px solid #e2e8f0",
-                fontSize: 16,
-                backgroundColor: "#ffffff",
-                color: "#0f172a",
-              }}
-            />
-          </div>
-          <div>
-            <label
-              htmlFor="endDate"
-              style={{
-                display: "block",
-                marginBottom: 8,
-                fontWeight: 600,
-                fontSize: 14,
-              }}
-            >
-              End Date *
-            </label>
-            <input
-              type="date"
-              id="endDate"
-              name="endDate"
-              value={formData.endDate}
-              onChange={handleChange}
-              required
-              min={formData.startDate || new Date().toISOString().split("T")[0]}
-              style={{
-                width: "100%",
-                padding: "12px 16px",
-                borderRadius: 8,
-                border: "1px solid #e2e8f0",
-                fontSize: 16,
-                backgroundColor: "#ffffff",
-                color: "#0f172a",
-              }}
-            />
-          </div>
-        </div>
-
-        {/* Status Message */}
-        {submitStatus.type && (
-          <div
-            style={{
-              padding: "12px 16px",
-              borderRadius: 8,
-              backgroundColor:
-                submitStatus.type === "success" ? "#dcfce7" : "#fee2e2",
-              color: submitStatus.type === "success" ? "#166534" : "#991b1b",
-              fontSize: 14,
-              border: `1px solid ${
-                submitStatus.type === "success" ? "#86efac" : "#fca5a5"
-              }`,
-            }}
-          >
-            {submitStatus.message}
-          </div>
-        )}
-
-        {/* Submit Button */}
-        <button
-          type="submit"
-          disabled={isSubmitting || !connectedAddress}
-          style={{
-            padding: "14px 24px",
-            borderRadius: 8,
-            border: "none",
-            fontSize: 16,
-            fontWeight: 600,
-            cursor:
-              isSubmitting || !connectedAddress ? "not-allowed" : "pointer",
-            backgroundColor:
-              isSubmitting || !connectedAddress ? "#94a3b8" : "#3b82f6",
-            color: "#ffffff",
-            transition: "background-color 0.2s",
-            opacity: isSubmitting || !connectedAddress ? 0.7 : 1,
-          }}
-          onMouseEnter={(e) => {
-            if (!isSubmitting && connectedAddress) {
-              e.currentTarget.style.backgroundColor = "#2563eb";
-            }
-          }}
-          onMouseLeave={(e) => {
-            if (!isSubmitting && connectedAddress) {
-              e.currentTarget.style.backgroundColor = "#3b82f6";
-            }
-          }}
-        >
-          {!connectedAddress
-            ? "Please Connect Wallet"
-            : isSubmitting
-            ? "Creating Campaign..."
-            : "Create Campaign"}
-        </button>
-      </form>
-    </main>
+    </section>
   );
 }
