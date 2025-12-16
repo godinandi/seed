@@ -172,6 +172,11 @@ contract DonationToken is Ownable, Pausable, ReentrancyGuard {
         whenNotPaused 
     {
         Campaign storage c = campaigns[_campaignId];
+
+        if ((block.timestamp > c.endDate || c.raised >= c.goal) && !c.isComplete) {
+            c.isComplete = true;
+        }
+
         if (!c.isComplete) revert CampaignNotComplete();
 
         // AUTO-CONVERT jika frontend kirim angka tanpa desimal (misal: 1, 5, 10)
