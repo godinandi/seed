@@ -6,6 +6,12 @@ import { ethers } from "ethers";
 import abi from "@/lib/abi/DonationToken.json";
 import { CONTRACT_ADDRESS } from "@/lib/addresses";
 
+declare global {
+  interface Window {
+    ethereum?: any;
+  }
+}
+
 /* =====================
    CONFIG
 ===================== */
@@ -107,7 +113,8 @@ export default function DonatePage() {
   ====================== */
   const fetchCampaign = async () => {
     if (!chainId || !Number.isInteger(campaignId)) return;
-    const provider = new ethers.BrowserProvider(window.ethereum);
+    // const provider = new ethers.BrowserProvider(window.ethereum);
+    const provider = new ethers.BrowserProvider((window as any).ethereum);
     const contract = new ethers.Contract(CONTRACT_ADDRESS, abi.abi, provider);
     const data = await contract.campaigns(campaignId);
     setCampaign(data);
