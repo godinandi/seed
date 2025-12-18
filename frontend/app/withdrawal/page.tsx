@@ -14,11 +14,12 @@ interface WithdrawalFormData {
 interface CampaignOption {
   id: string;
   title: string;
-  raised: number;
-  withdrawnTotal: number;
-  isComplete: boolean;
-  goal: number;
+  raised: bigint;
+  withdrawnTotal: bigint;
+  goal: bigint;
   endDate: number;
+  isEligible: boolean; // block.timestamp > endDate || raised >= goal
+  creator: string;
 }
 
 export default function WithdrawalPage() {
@@ -29,12 +30,20 @@ export default function WithdrawalPage() {
     withdrawalAmount: "",
     withdrawalReason: "",
   });
+
+  const [maxWithdrawAllowed, setMaxWithdrawAllowed] = useState<bigint | null>(null);
+  const [isFinalWithdraw, setIsFinalWithdraw] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitStatus, setSubmitStatus] = useState<{ type: "success" | "error" | null; message: string }>({ type: null, message: "" });
   const [txHash, setTxHash] = useState<string | null>(null);
-  const [maxWithdrawAllowed, setMaxWithdrawAllowed] = useState<number | null>(null);
+  const [txSender, setTxSender] = useState<string | null>(null);
+  const [txRecipient, setTxRecipient] = useState<string | null>(null);
+  const [selectedCampaign, setSelectedCampaign] = useState<CampaignOption | null>(null);
+  const [chainId, setChainId] = useState<number | null>(null);
 
-  // Detect wallet
+  /* =====================
+     WALLET
+  ====================== */
   useEffect(() => {
     const ethereum = (window as any)?.ethereum;
     if (!ethereum) return;
@@ -46,138 +55,190 @@ export default function WithdrawalPage() {
     ethereum.on?.("accountsChanged", (accounts: string[]) => {
       setConnectedAddress(accounts?.[0] || null);
     });
+
+    ethereum.request({ method: "eth_chainId" }).then((idHex: string) => {
+      setChainId(parseInt(idHex, 16));
+    });
+
+    ethereum.on?.("chainChanged", (idHex: string) => {
+      setChainId(parseInt(idHex, 16));
+    });
   }, []);
 
-  // Fetch user's campaigns from contract
-  useEffect(() => {
-    if (!connectedAddress) {
-      setCampaigns([]);
-      return;
+  /* =====================
+     FETCH CAMPAIGNS
+  ====================== */
+  const fetchCampaigns = async () => {
+    if (!connectedAddress) return;
+    const provider = new ethers.BrowserProvider((window as any).ethereum);
+    const contract = new ethers.Contract(CONTRACT_ADDRESS, donationTokenJson.abi, provider);
+
+    const filter = contract.filters.CampaignCreated(null, connectedAddress);
+    const events = await contract.queryFilter(filter, 0, "latest");
+    const now = Math.floor(Date.now() / 1000);
+
+    const result: CampaignOption[] = [];
+
+    for (const ev of events) {
+      const id = ev.args?.campaignId.toString();
+      const title = ev.args?.title;
+      const c = await contract.campaigns(id);
+
+      const raised = BigInt(c.raised.toString());
+      const withdrawnTotal = BigInt(c.withdrawnTotal.toString());
+      const goal = BigInt(c.goal.toString());
+      const creator = c.creator;
+
+      const isEligible = c.isComplete || raised >= goal || c.endDate <= now;
+
+      result.push({
+        id,
+        title,
+        raised,
+        withdrawnTotal,
+        goal,
+        endDate: Number(c.endDate),
+        isEligible,
+        creator,
+      });
     }
 
-    const fetchUserCampaigns = async () => {
-      try {
-        const ethereum = (window as any)?.ethereum;
-        if (!ethereum) return;
+    setCampaigns(result);
+  };
 
-        const provider = new ethers.BrowserProvider(ethereum);
-        const contract = new ethers.Contract(CONTRACT_ADDRESS, donationTokenJson.abi, provider);
-
-        const filter = contract.filters.CampaignCreated(null, connectedAddress);
-        const events = await contract.queryFilter(filter, 0, "latest");
-
-        const now = Math.floor(Date.now() / 1000);
-        const userCampaigns: CampaignOption[] = [];
-
-        for (const ev of events) {
-          const campaignId = ev.args?.campaignId.toString();
-          const title = ev.args?.title;
-
-          const c = await contract.campaigns(campaignId);
-          const raised = Number(c.raised) / 1_000_000;
-          const withdrawnTotal = Number(c.withdrawnTotal) / 1_000_000;
-          const goal = Number(c.goal) / 1_000_000;
-          const endDate = Number(c.endDate);
-
-          // Show campaign if:
-          // - already complete
-          // - OR raised >= goal
-          // - OR endDate passed
-          if (c.isComplete || raised >= goal || endDate <= now) {
-            userCampaigns.push({
-              id: campaignId,
-              title,
-              raised,
-              withdrawnTotal,
-              isComplete: c.isComplete,
-              goal,
-              endDate,
-            });
-          }
-        }
-
-        setCampaigns(userCampaigns);
-      } catch (e) {
-        console.error(e);
-      }
-    };
-
-    fetchUserCampaigns();
+  useEffect(() => {
+    fetchCampaigns();
   }, [connectedAddress]);
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
-    const { name, value } = e.target;
+  /* =====================
+     HELPER
+  ====================== */
+  function remaining(c: CampaignOption) {
+    return c.raised - c.withdrawnTotal;
+  }
 
-    if (name === "withdrawalAmount") {
-      const numValue = value.replace(/[^0-9.]/g, "");
-      const parts = numValue.split(".");
-      const formattedValue = parts.length > 2 ? parts[0] + "." + parts.slice(1).join("") : numValue;
-      setFormData(prev => ({ ...prev, [name]: formattedValue }));
-    } else if (name === "campaignId") {
-      setFormData(prev => ({ ...prev, [name]: value }));
-      const selected = campaigns.find(c => c.id === value);
-      if (selected) {
-        const maxWithdraw = Math.min(selected.raised * 0.25, selected.raised - selected.withdrawnTotal);
-        setMaxWithdrawAllowed(parseFloat(maxWithdraw.toFixed(6)));
-      } else {
-        setMaxWithdrawAllowed(null);
-      }
+  function getStatus(c: CampaignOption) {
+    const rem = remaining(c);
+    if (c.isEligible && rem === 0n) return "Closed";
+    if (c.isEligible && rem > 0n) return "Eligible";
+    return "Not eligible";
+  }
+
+  /* =====================
+     HANDLERS
+  ====================== */
+  const handleCampaignChange = (id: string) => {
+    setFormData({ campaignId: id, withdrawalAmount: "", withdrawalReason: "" });
+    setSubmitStatus({ type: null, message: "" });
+    setTxHash(null);
+    setTxSender(null);
+    setTxRecipient(null);
+
+    const c = campaigns.find(c => c.id === id) || null;
+    setSelectedCampaign(c);
+
+    if (!c) {
+      setMaxWithdrawAllowed(null);
+      setIsFinalWithdraw(false);
+      return;
+    }
+
+    const rem = remaining(c);
+
+    if (getStatus(c) !== "Eligible") {
+      setMaxWithdrawAllowed(null);
+      setIsFinalWithdraw(false);
+      return;
+    }
+
+    const maxPerWithdraw = (c.raised * 25n) / 100n;
+    let max: bigint;
+    let finalMode = false;
+
+    if (rem <= maxPerWithdraw || maxPerWithdraw < 1_000_000n) {
+      max = rem;
+      finalMode = true;
     } else {
-      setFormData(prev => ({ ...prev, [name]: value }));
+      max = maxPerWithdraw;
+    }
+
+    setMaxWithdrawAllowed(max);
+    setIsFinalWithdraw(finalMode);
+
+    if (finalMode) {
+      setFormData(prev => ({ ...prev, withdrawalAmount: (Number(max) / 1e6).toFixed(6) }));
     }
   };
 
-  const handleMaxClick = () => {
-    if (maxWithdrawAllowed !== null) {
-      const valueStr = maxWithdrawAllowed.toFixed(6);
-      setFormData(prev => ({ ...prev, withdrawalAmount: valueStr }));
-    }
+  const handleAmountChange = (v: string) => {
+    if (!selectedCampaign || getStatus(selectedCampaign) !== "Eligible" || isFinalWithdraw) return;
+    const clean = v.replace(/[^0-9.]/g, "");
+    setFormData(prev => ({ ...prev, withdrawalAmount: clean }));
   };
 
+  /* =====================
+     SUBMIT
+  ====================== */
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!connectedAddress) {
-      setSubmitStatus({ type: "error", message: "Please connect your wallet first" });
+
+    if (!connectedAddress || !selectedCampaign) return;
+    const status = getStatus(selectedCampaign);
+    if (status !== "Eligible") {
+      setSubmitStatus({ type: "error", message: "Campaign is not eligible for withdrawal" });
       return;
     }
-    if (!formData.campaignId) {
-      setSubmitStatus({ type: "error", message: "Please select a campaign" });
-      return;
-    }
-    if (!formData.withdrawalAmount || parseFloat(formData.withdrawalAmount) <= 0) {
-      setSubmitStatus({ type: "error", message: "Enter a valid withdrawal amount" });
-      return;
-    }
+
     if (!formData.withdrawalReason) {
-      setSubmitStatus({ type: "error", message: "Provide a reason for withdrawal" });
+      setSubmitStatus({ type: "error", message: "Withdrawal reason required" });
       return;
     }
-    if (maxWithdrawAllowed !== null && parseFloat(formData.withdrawalAmount) > maxWithdrawAllowed) {
-      setSubmitStatus({ type: "error", message: `Amount exceeds max allowed withdrawal: ${maxWithdrawAllowed.toFixed(6)} USDC` });
+
+    if (!maxWithdrawAllowed) return;
+
+    let amount;
+    try {
+      amount = ethers.parseUnits(formData.withdrawalAmount || "0", 6);
+    } catch {
+      setSubmitStatus({ type: "error", message: "Invalid withdrawal amount" });
+      return;
+    }
+
+    if (!isFinalWithdraw && amount < 1_000_000n) {
+      setSubmitStatus({ type: "error", message: "Minimum withdrawal is 1 USDC" });
+      return;
+    }
+
+    if (amount > maxWithdrawAllowed) {
+      setSubmitStatus({ type: "error", message: `Max allowed: ${(Number(maxWithdrawAllowed) / 1e6).toFixed(6)} USDC` });
       return;
     }
 
     try {
       setIsSubmitting(true);
       setSubmitStatus({ type: null, message: "" });
-      setTxHash(null);
 
-      const ethereum = (window as any).ethereum;
-      const provider = new ethers.BrowserProvider(ethereum);
+      const provider = new ethers.BrowserProvider((window as any).ethereum);
       const signer = await provider.getSigner();
       const contract = new ethers.Contract(CONTRACT_ADDRESS, donationTokenJson.abi, signer);
 
-      let amount = parseFloat(formData.withdrawalAmount);
-      if (amount < 1e6) amount = amount * 1_000_000;
-
-      const tx = await contract.withdraw(formData.campaignId, Math.floor(amount), formData.withdrawalReason);
-      setSubmitStatus({ type: null, message: "Waiting for transaction confirmation..." });
+      const tx = await contract.withdraw(formData.campaignId, amount, formData.withdrawalReason);
       const receipt = await tx.wait();
-      setTxHash(receipt.transactionHash);
-      setSubmitStatus({ type: "success", message: "Withdrawal successful!" });
 
+      setTxHash(receipt.transactionHash);
+      setTxSender(receipt.from);
+      setTxRecipient(receipt.to);
+      setSubmitStatus({ type: "success", message: "Withdrawal successful" });
+
+      // Refresh campaigns untuk update remaining
+      await fetchCampaigns();
+
+      // Clear form
       setFormData({ campaignId: "", withdrawalAmount: "", withdrawalReason: "" });
       setMaxWithdrawAllowed(null);
+      setIsFinalWithdraw(false);
+      setSelectedCampaign(null);
+
     } catch (err: any) {
       setSubmitStatus({ type: "error", message: err?.reason || err?.message || "Transaction failed" });
     } finally {
@@ -185,81 +246,131 @@ export default function WithdrawalPage() {
     }
   };
 
-  const inputClass = "w-full p-3 rounded-xl bg-white border border-gray-200 shadow-sm focus:outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-200";
+  const inputClass = "w-full p-3 rounded-xl border border-gray-200";
+  const explorerBase = chainId === 11155111 ? "https://sepolia.etherscan.io" : "https://etherscan.io";
+  const creatorAddress = selectedCampaign?.creator || connectedAddress;
+
+  const isWithdrawable = selectedCampaign && getStatus(selectedCampaign) === "Eligible";
 
   return (
-    <section className="py-15">
-      <div className="max-w-3xl mx-auto">
-        <div className="bg-white/70 backdrop-blur-md px-10 pb-10 pt-6 rounded-3xl shadow-lg border border-white/40">
-          <div className="mb-8 text-center">
-            <h1 className="text-3xl md:text-4xl font-bold text-gray-800 mb-2">Withdrawal Request</h1>
-            <p className="text-gray-600">Request a withdrawal from your completed or ended campaigns</p>
+    <section className="py-16 max-w-3xl mx-auto">
+      <form onSubmit={handleSubmit} className="space-y-4 bg-white p-6 rounded-3xl shadow">
+        <h1 className="text-2xl font-bold text-center mb-4">Withdraw Campaign Funds</h1>
+
+        {/* Campaign */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Campaign</label>
+          <select
+            className={inputClass}
+            value={formData.campaignId}
+            onChange={e => handleCampaignChange(e.target.value)}
+          >
+            <option value="">-- Select Campaign --</option>
+            {campaigns.map(c => (
+              <option key={c.id} value={c.id}>
+                {c.title} — {(Number(c.raised) / 1e6).toFixed(6)} USDC {getStatus(c)}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/* Max + Remaining */}
+        {selectedCampaign && isWithdrawable && maxWithdrawAllowed && (
+          <div className="flex justify-between items-center text-sm text-gray-600 mb-2">
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                className="bg-orange-500 text-white px-2 py-1 rounded text-xs hover:bg-orange-600"
+                onClick={() =>
+                  setFormData(prev => ({
+                    ...prev,
+                    withdrawalAmount: (Number(maxWithdrawAllowed) / 1e6).toFixed(6)
+                  }))
+                }
+              >
+                Max
+              </button>
+              <span className="text-gray-700">{(Number(maxWithdrawAllowed) / 1e6).toFixed(6)} USDC</span>
+            </div>
+            <span>
+              Remaining: <b>{(Number(remaining(selectedCampaign)) / 1e6).toFixed(6)}</b> USDC
+            </span>
           </div>
+        )}
 
-          <form onSubmit={handleSubmit} className="space-y-6">
-            <div>
-              <label className="font-semibold text-sm mb-1 block">Select Your Campaign *</label>
-              <select name="campaignId" value={formData.campaignId} onChange={handleChange} className={inputClass}>
-                <option value="">-- Select a campaign --</option>
-                {campaigns.map(c => {
-                  let statusLabel = "";
-                  const now = Math.floor(Date.now() / 1000);
+        {/* Status */}
+        {selectedCampaign && getStatus(selectedCampaign) === "Closed" && (
+          <div className="text-sm text-red-600 mb-2">Status: Closed</div>
+        )}
+        {selectedCampaign && getStatus(selectedCampaign) === "Not eligible" && (
+          <div className="text-sm text-gray-600 mb-2">Status: Not eligible</div>
+        )}
 
-                  if (c.isComplete) statusLabel = "Completed";
-                  else if (c.raised >= c.goal) statusLabel = "Goal Reached";
-                  else if (c.endDate < now) statusLabel = "Time Over";
+        {/* Amount */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Amount</label>
+          <input
+            className={inputClass}
+            placeholder="Amount"
+            value={formData.withdrawalAmount}
+            disabled={!isWithdrawable || isFinalWithdraw}
+            onChange={e => handleAmountChange(e.target.value)}
+          />
+        </div>
 
-                  return (
-                    <option key={c.id} value={c.id}>
-                      {c.title} (Raised: {c.raised.toFixed(6)} USDC) {statusLabel && `- ${statusLabel}`}
-                    </option>
-                  );
-                })}
-              </select>
+        {/* Reason */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Reason / Receipt Link for Reimbursement</label>
+          <textarea
+            className={inputClass}
+            rows={3}
+            placeholder="Withdrawal reason / link of original receipts for reimbursement purposes"
+            value={formData.withdrawalReason}
+            onChange={e => setFormData(prev => ({ ...prev, withdrawalReason: e.target.value }))}
+          />
+        </div>
 
-              {maxWithdrawAllowed !== null && (
-                <div className="mt-2 flex items-center space-x-2 text-sm text-gray-600">
-                  <button type="button" onClick={handleMaxClick} className="px-3 py-1 bg-orange-200 text-orange-800 rounded">Max</button>
-                  <span>{maxWithdrawAllowed.toFixed(6)} USDC</span>
-                </div>
-              )}
-            </div>
+        {/* Status */}
+        {submitStatus.type && (
+          <div className={submitStatus.type === "success" ? "text-green-600" : "text-red-600"}>
+            {submitStatus.message}
+          </div>
+        )}
 
-            <div>
-              <label className="font-semibold text-sm mb-1 block">Withdrawal Amount (USDC) *</label>
-              <input type="text" name="withdrawalAmount" value={formData.withdrawalAmount} onChange={handleChange} placeholder="0.000000" className={inputClass} />
-            </div>
-
-            <div>
-              <label className="font-semibold text-sm mb-1 block">Withdrawal Reason *</label>
-              <textarea
-                name="withdrawalReason"
-                value={formData.withdrawalReason}
-                onChange={handleChange}
-                rows={3}                 // lebih pendek
-                placeholder="Explain the reason..."
-                className="w-full p-3 rounded-xl bg-white border border-gray-200 shadow-sm focus:outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-200 h-20" // height tetap bisa di-set
-              />
-            </div>
-
-            {submitStatus.type && (
-              <div className={`p-4 rounded-xl border text-sm ${submitStatus.type === "success" ? "bg-green-100 border-green-300 text-green-700" : "bg-red-100 border-red-300 text-red-700"}`}>
-                {submitStatus.message}
-              </div>
-            )}
-
+        {/* Transaction info */}
+        {creatorAddress && chainId && (
+          <div className="text-sm text-gray-600 space-y-1">
             {txHash && (
-              <a href={`https://sepolia.etherscan.io/tx/${txHash}`} target="_blank" className="block text-orange-600 underline text-sm">
-                View Transaction on Etherscan
+              <a
+                href={`${explorerBase}/tx/${txHash}`}
+                target="_blank"
+                className="underline"
+              >
+                View last transaction
               </a>
             )}
+            <a
+              href={`${explorerBase}/address/${creatorAddress}`}
+              target="_blank"
+              className="underline"
+            >
+              View all transactions of this wallet
+            </a>
+            {txSender && <div>From: <span className="font-mono">{txSender}</span></div>}
+            {txRecipient && <div>To: <span className="font-mono">{txRecipient}</span></div>}
+          </div>
+        )}
 
-            <button type="submit" disabled={isSubmitting || !connectedAddress || campaigns.length === 0} className={`w-full py-3 rounded-xl font-semibold transition ${!connectedAddress || campaigns.length === 0 ? "bg-gray-400 cursor-not-allowed text-white" : "bg-orange-500 hover:bg-orange-600 text-white"}`}>
-              {!connectedAddress ? "Please Connect Wallet" : campaigns.length === 0 ? "No Campaigns Available" : isSubmitting ? "Submitting..." : "Submit Withdrawal"}
-            </button>
-          </form>
-        </div>
-      </div>
+        {/* Withdraw button */}
+        <button
+          disabled={!isWithdrawable || isSubmitting}
+          className={`w-full py-3 text-white rounded-xl ${
+            !isWithdrawable || isSubmitting ? "bg-gray-400 cursor-not-allowed" : "bg-orange-500"
+          }`}
+        >
+          {isSubmitting ? "Submitting..." : "Withdraw"}
+        </button>
+      </form>
     </section>
   );
 }
