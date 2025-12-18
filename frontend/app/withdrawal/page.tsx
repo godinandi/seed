@@ -80,8 +80,11 @@ export default function WithdrawalPage() {
     const result: CampaignOption[] = [];
 
     for (const ev of events) {
-      const id = ev.args?.campaignId.toString();
-      const title = ev.args?.title;
+      // const id = ev.args?.campaignId.toString();
+      // const title = ev.args?.title;
+      const id = (ev as any).args?.campaignId.toString();
+      const title = (ev as any).args?.title;
+
       const c = await contract.campaigns(id);
 
       const raised = BigInt(c.raised.toString());
