@@ -47,9 +47,14 @@ export default function LeaderboardPage() {
           // const ts = block.timestamp;
           // if (ts < yearStart || ts >= yearEnd) continue;
 
-          const donorAddr = ev.args.donor;
-          const donorName = ev.args.donorName;
-          const amountNet = Number(ev.args.amountNet) / 1_000_000;
+          // const donorAddr = ev.args.donor;
+          // const donorName = ev.args.donorName;
+          // const amountNet = Number(ev.args.amountNet) / 1_000_000;
+
+          // Gunakan (ev as any) agar TypeScript tidak protes soal .args
+          const donorAddr = (ev as any).args.donor;
+          const donorName = (ev as any).args.donorName;
+          const amountNet = Number((ev as any).args.amountNet) / 1_000_000;
 
           if (!donorTotals[donorAddr]) {
             donorTotals[donorAddr] = { name: donorName, total: amountNet };
