@@ -34,8 +34,18 @@ export default function LeaderboardPage() {
 
         for (const ev of events) {
           const block = await provider.getBlock(ev.blockNumber);
-          const ts = block.timestamp;
-          if (ts < yearStart || ts >= yearEnd) continue;
+
+          // Gunakan pengecekan 'if' agar aman
+          if (block) {
+            const ts = block.timestamp;
+            if (ts < yearStart || ts >= yearEnd) continue;
+            // ... sisa kode di dalam loop
+          } else {
+            continue; // Jika blok tidak ditemukan, lewati ke event berikutnya
+          }
+
+          // const ts = block.timestamp;
+          // if (ts < yearStart || ts >= yearEnd) continue;
 
           const donorAddr = ev.args.donor;
           const donorName = ev.args.donorName;
